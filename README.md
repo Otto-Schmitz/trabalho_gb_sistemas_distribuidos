@@ -4,11 +4,12 @@ Sistema distribuído em Go usando NATS para comunicação entre sensores, nós d
 
 ## 📋 Visão Geral
 
-O sistema é composto por 3 camadas principais:
+O sistema é composto por 3 camadas principais + 1 dashboard:
 
 1. **Sensores (Producers)**: Simulam dispositivos embarcados que publicam leituras em `sensors.readings`
 2. **Edge Nodes (Processadores Locais)**: Filtram ruído, detectam limites locais, fazem agregação parcial e reduzem tráfego para a nuvem. Publicam em `edge.filtered` e `edge.alerts`
 3. **Cloud Processor (Nuvem)**: Agrega tudo, calcula métricas globais, armazena/analisa e emite alertas globais. Assina tudo de `edge.*`
+4. **Dashboard Web**: Interface web em tempo real para visualizar métricas, leituras, alertas e gráficos do sistema
 
 ## 🏗️ Arquitetura
 
@@ -61,6 +62,7 @@ Isso criará os binários em `bin/`:
 - `bin/sensor` - Producer de sensores
 - `bin/edge` - Edge Node processor
 - `bin/cloud` - Cloud Processor
+- `bin/dashboard` - Dashboard web em tempo real
 
 ## 🔧 Uso
 
@@ -94,6 +96,12 @@ docker start nats-server
 ./bin/sensor -nats nats://localhost:4222 -interval 1s -base 50.0 -noise 5.0 -anomaly 0.1
 ```
 
+**Dashboard Web** (Terminal 4):
+```bash
+./bin/dashboard -nats nats://localhost:4222 -port 8080
+# Abra http://localhost:8080 no seu navegador
+```
+
 ### Opções de Linha de Comando
 
 #### Sensor
@@ -118,6 +126,12 @@ docker start nats-server
 - `-nats`: URL do servidor NATS (padrão: `nats://localhost:4222`)
 - `-stats`: Intervalo de relatório de estatísticas (padrão: `10s`)
 - `-max-readings`: Máximo de leituras a manter em memória (padrão: `10000`)
+
+#### Dashboard
+- `-nats`: URL do servidor NATS (padrão: `nats://localhost:4222`)
+- `-port`: Porta do servidor web (padrão: `8080`)
+- `-max-readings`: Máximo de leituras a manter em memória (padrão: `1000`)
+- `-max-alerts`: Máximo de alertas a manter em memória (padrão: `100`)
 
 ## 🧪 Testes
 
@@ -216,8 +230,10 @@ sistemas_distribuidos_gb/
 │   │   └── main.go          # Producer de sensores
 │   ├── edge/
 │   │   └── main.go          # Edge Node processor
-│   └── cloud/
-│       └── main.go          # Cloud Processor
+│   ├── cloud/
+│   │   └── main.go          # Cloud Processor
+│   └── dashboard/
+│       └── main.go          # Dashboard web em tempo real
 ├── scripts/
 │   ├── test1_scalability.sh
 │   ├── test2_latency.sh
@@ -234,7 +250,29 @@ sistemas_distribuidos_gb/
 
 ## 🔍 Monitoramento
 
-O Cloud Processor reporta estatísticas globais periodicamente:
+### Dashboard Web em Tempo Real
+
+O dashboard web fornece uma interface visual moderna para monitorar o sistema em tempo real:
+
+**Recursos do Dashboard:**
+- 📊 **Métricas em tempo real**: Total de leituras, taxa de mensagens/segundo, média, desvio padrão, min/max
+- ⚡ **Performance**: Latência média, P95, P99, edge nodes ativos, total de alertas
+- 📈 **Gráfico interativo**: Visualização das leituras dos sensores em tempo real (últimas 50 leituras)
+- 📋 **Tabelas dinâmicas**: Leituras recentes e alertas com atualização automática
+- 🔄 **Atualização automática**: Usa Server-Sent Events (SSE) para atualização em tempo real sem refresh da página
+
+**Para iniciar o dashboard:**
+```bash
+./bin/dashboard
+# ou
+make run-dashboard
+```
+
+Depois acesse: **http://localhost:8080** no seu navegador.
+
+### Cloud Processor (Console)
+
+O Cloud Processor também reporta estatísticas globais no console periodicamente:
 - Total de leituras processadas
 - Taxa de mensagens/segundo
 - Média, desvio padrão, min/max dos valores

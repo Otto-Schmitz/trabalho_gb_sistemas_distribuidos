@@ -11,6 +11,7 @@ build:
 	go build -o $(BIN_DIR)/sensor ./cmd/sensor
 	go build -o $(BIN_DIR)/edge ./cmd/edge
 	go build -o $(BIN_DIR)/cloud ./cmd/cloud
+	go build -o $(BIN_DIR)/dashboard ./cmd/dashboard
 	@echo "Build complete!"
 
 # Install dependencies
@@ -43,6 +44,12 @@ run-cloud:
 	@mkdir -p $(BIN_DIR)
 	@if [ ! -f $(BIN_DIR)/cloud ]; then $(MAKE) build; fi
 	./$(BIN_DIR)/cloud
+
+# Run dashboard
+run-dashboard:
+	@mkdir -p $(BIN_DIR)
+	@if [ ! -f $(BIN_DIR)/dashboard ]; then $(MAKE) build; fi
+	./$(BIN_DIR)/dashboard
 
 # Make test scripts executable
 setup-scripts:

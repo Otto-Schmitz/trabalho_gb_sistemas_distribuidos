@@ -24,8 +24,17 @@ echo ""
 mkdir -p logs
 
 # Limpar processos anteriores
-pkill -f "sensor\|edge\|cloud" 2>/dev/null || true
+pkill -f "sensor\|edge\|cloud\|dashboard" 2>/dev/null || true
 sleep 1
+
+# Iniciar Dashboard Web
+echo "Iniciando Dashboard Web..."
+./bin/dashboard -nats "$NATS_URL" -port 8080 > logs/demo_dashboard.log 2>&1 &
+DASHBOARD_PID=$!
+sleep 2
+echo "✓ Dashboard Web iniciado (PID: $DASHBOARD_PID)"
+echo "  📊 Acesse: http://localhost:8080"
+echo ""
 
 # Iniciar Cloud Processor
 echo "Iniciando Cloud Processor..."
@@ -56,7 +65,7 @@ echo ""
 cleanup() {
     echo ""
     echo "Encerrando demonstração..."
-    kill $CLOUD_PID $EDGE_PID 2>/dev/null
+    kill $CLOUD_PID $EDGE_PID $DASHBOARD_PID 2>/dev/null
     pkill -f "sensor" 2>/dev/null
     sleep 1
     echo "✓ Processos encerrados"
@@ -64,16 +73,20 @@ cleanup() {
     echo "Logs disponíveis em:"
     echo "  - logs/demo_cloud.log"
     echo "  - logs/demo_edge.log"
+    echo "  - logs/demo_dashboard.log"
     echo "  - logs/demo_sensor_*.log"
 }
 trap cleanup EXIT
 
 echo "=== Sistema em execução ==="
 echo ""
-echo "Os componentes estão rodando. Você pode observar os logs para ver:"
+echo "Os componentes estão rodando:"
+echo "  - 📊 Dashboard Web: http://localhost:8080"
 echo "  - Sensores publicando leituras"
 echo "  - Edge Node filtrando e processando"
 echo "  - Cloud Processor agregando métricas"
+echo ""
+echo "💡 DICA: Abra http://localhost:8080 no seu navegador para ver o dashboard em tempo real!"
 echo ""
 echo "Pressione Ctrl+C para parar a demonstração"
 echo ""
