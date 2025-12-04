@@ -31,9 +31,10 @@ type SensorStatus struct {
 
 // SimulationState maintains the state of drift simulation
 type SimulationState struct {
-	isDrifting     bool
-	driftRemaining int
-	driftOffset    float64
+	isDrifting    bool
+	driftDuration int
+	currentOffset float64
+	targetOffset  float64
 }
 
 var (
@@ -152,48 +153,68 @@ func startAPIServer(port string) {
 }
 
 func generateValue(rng *rand.Rand, base, noise, driftChance, spikeChance float64) float64 {
-	// 1. Check if we are currently drifting
+	// 1. Manage Drift State (Gradual Transitions)
 	if simState.isDrifting {
-		simState.driftRemaining--
-		if simState.driftRemaining <= 0 {
+		simState.driftDuration--
+		
+		// Move currentOffset towards targetOffset (Approach Phase)
+		if simState.currentOffset < simState.targetOffset {
+			simState.currentOffset += rng.Float64() * 5.0 // Slowly increase
+			if simState.currentOffset > simState.targetOffset {
+				simState.currentOffset = simState.targetOffset
+			}
+		} else if simState.currentOffset > simState.targetOffset {
+			simState.currentOffset -= rng.Float64() * 5.0 // Slowly decrease
+			if simState.currentOffset < simState.targetOffset {
+				simState.currentOffset = simState.targetOffset
+			}
+		}
+
+		if simState.driftDuration <= 0 {
 			simState.isDrifting = false
 			log.Printf("End of Drift. Returning to normal.")
-		} else {
-			// Return drifted value with some noise
-			return base + simState.driftOffset + rng.NormFloat64()*noise
+		}
+	} else {
+		// Recovery Phase: Slowly return offset to 0
+		if simState.currentOffset != 0 {
+			approachSpeed := rng.Float64() * 3.0
+			if simState.currentOffset > 0 {
+				simState.currentOffset -= approachSpeed
+				if simState.currentOffset < 0 { simState.currentOffset = 0 }
+			} else {
+				simState.currentOffset += approachSpeed
+				if simState.currentOffset > 0 { simState.currentOffset = 0 }
+			}
+		}
+
+		// 2. Start new Drift?
+		if simState.currentOffset == 0 && rng.Float64() < driftChance {
+			simState.isDrifting = true
+			simState.driftDuration = rng.Intn(10) + 10 // Longer drift (10-20s)
+			
+			// Target offset: +/- 35 (aiming for 15 or 85)
+			if rng.Float64() < 0.5 {
+				simState.targetOffset = -35.0 
+			} else {
+				simState.targetOffset = 35.0
+			}
+			log.Printf("Starting Drift! Target: %.2f", simState.targetOffset)
 		}
 	}
 
-	// 2. Check if we should start drifting (Drift Anomaly)
-	// Drift simulates a process shift (e.g. stabilized at 15 instead of 50)
-	if rng.Float64() < driftChance {
-		simState.isDrifting = true
-		simState.driftRemaining = rng.Intn(6) + 5 // Drift for 5 to 10 readings
-		
-		// Drift either down to ~15 or up to ~85 (offset of +/- 35)
-		if rng.Float64() < 0.5 {
-			simState.driftOffset = -35.0 // Will result in ~15
-		} else {
-			simState.driftOffset = 35.0  // Will result in ~85
-		}
-		
-		log.Printf("Starting Drift! Offset: %.2f, Duration: %d", simState.driftOffset, simState.driftRemaining)
-		return base + simState.driftOffset + rng.NormFloat64()*noise
-	}
-
-	// 3. Check for Spike Anomaly (Instantaneous Burst)
-	// Spike simulates a glitch (e.g. 500 or -200)
+	// 3. Spike Anomaly (Instantaneous)
+	// Add spike ON TOP of current state
+	spike := 0.0
 	if rng.Float64() < spikeChance {
-		spike := 0.0
 		if rng.Float64() < 0.5 {
-			spike = 150.0 + rng.Float64()*100.0 // +150 to +250
+			spike = 60.0 + rng.Float64()*20.0 // +60 to +80
 		} else {
-			spike = -150.0 - rng.Float64()*100.0 // -150 to -250
+			spike = -60.0 - rng.Float64()*20.0 // -60 to -80
 		}
-		log.Printf("Generating Spike! Value: %.2f", base+spike)
-		return base + spike
+		log.Printf("Generating Spike! Value: %.2f", base + simState.currentOffset + spike)
 	}
 
-	// 4. Normal Operation
-	return base + rng.NormFloat64()*noise
+	// 4. Calculate Final Value
+	// Base + Gradual Offset + Spike + Noise
+	return base + simState.currentOffset + spike + rng.NormFloat64()*noise
 }
