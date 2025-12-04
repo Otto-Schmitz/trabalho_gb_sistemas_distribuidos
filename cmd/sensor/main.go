@@ -49,8 +49,8 @@ func main() {
 		interval      = flag.Duration("interval", 1*time.Second, "Publication interval")
 		baseValue     = flag.Float64("base", 50.0, "Base value for readings")
 		noiseLevel    = flag.Float64("noise", 2.0, "Noise level (std deviation)") // Reduced noise for stability
-		anomalyChance = flag.Float64("anomaly", 0.05, "Probability of Drift (0-1)") // Chance to start drifting
-		spikeChance   = flag.Float64("spike", 0.02, "Probability of Spike (0-1)")   // Chance of single huge spike
+		anomalyChance = flag.Float64("anomaly", 0.005, "Probability of Drift (0-1)") // 0.5% chance (rare)
+		spikeChance   = flag.Float64("spike", 0.001, "Probability of Spike (0-1)")   // 0.1% chance (very rare)
 		httpPort      = flag.String("http-port", "8081", "HTTP API port")
 	)
 	flag.Parse()
@@ -158,13 +158,14 @@ func generateValue(rng *rand.Rand, base, noise, driftChance, spikeChance float64
 		simState.driftDuration--
 		
 		// Move currentOffset towards targetOffset (Approach Phase)
+		step := 0.5 // Slower transition for realism
 		if simState.currentOffset < simState.targetOffset {
-			simState.currentOffset += rng.Float64() * 5.0 // Slowly increase
+			simState.currentOffset += rng.Float64() * step
 			if simState.currentOffset > simState.targetOffset {
 				simState.currentOffset = simState.targetOffset
 			}
 		} else if simState.currentOffset > simState.targetOffset {
-			simState.currentOffset -= rng.Float64() * 5.0 // Slowly decrease
+			simState.currentOffset -= rng.Float64() * step
 			if simState.currentOffset < simState.targetOffset {
 				simState.currentOffset = simState.targetOffset
 			}
@@ -177,7 +178,7 @@ func generateValue(rng *rand.Rand, base, noise, driftChance, spikeChance float64
 	} else {
 		// Recovery Phase: Slowly return offset to 0
 		if simState.currentOffset != 0 {
-			approachSpeed := rng.Float64() * 3.0
+			approachSpeed := rng.Float64() * 0.5 // Slower recovery
 			if simState.currentOffset > 0 {
 				simState.currentOffset -= approachSpeed
 				if simState.currentOffset < 0 { simState.currentOffset = 0 }
@@ -190,7 +191,7 @@ func generateValue(rng *rand.Rand, base, noise, driftChance, spikeChance float64
 		// 2. Start new Drift?
 		if simState.currentOffset == 0 && rng.Float64() < driftChance {
 			simState.isDrifting = true
-			simState.driftDuration = rng.Intn(10) + 10 // Longer drift (10-20s)
+			simState.driftDuration = rng.Intn(30) + 30 // Drift for 30-60 seconds
 			
 			// Target offset: +/- 35 (aiming for 15 or 85)
 			if rng.Float64() < 0.5 {
