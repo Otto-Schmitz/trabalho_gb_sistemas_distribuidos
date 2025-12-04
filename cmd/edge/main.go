@@ -234,7 +234,8 @@ func processMessage(data []byte, stats *EdgeStats, nc *nats.Conn, edgeID string,
 	mean := stats.Sum / float64(stats.Count)
 	stats.mu.Unlock()
 
-	// Calculate standard deviation for noise filtering
+	// Calculate standard deviation for noise filtering (just for logging if needed)
+	/*
 	var stdDev float64
 	if len(stats.WindowValues) > 1 {
 		var variance float64
@@ -244,12 +245,12 @@ func processMessage(data []byte, stats *EdgeStats, nc *nats.Conn, edgeID string,
 		stdDev = math.Sqrt(variance / float64(len(stats.WindowValues)))
 	}
 
-	// Noise filtering: reject if value is too far from mean
+	// Noise filtering disabled to allow drift detection
 	if stdDev > 0 && math.Abs(reading.Value-mean) > noiseFilter*stdDev {
-		log.Printf("Filtered out noise: sensor_id=%s, value=%.2f, mean=%.2f, std=%.2f", 
+		log.Printf("Potential noise detected (kept): sensor_id=%s, value=%.2f, mean=%.2f, std=%.2f", 
 			reading.SensorID, reading.Value, mean, stdDev)
-		return
 	}
+	*/
 
 	// Create filtered reading
 	filtered := FilteredReading{
@@ -271,20 +272,28 @@ func processMessage(data []byte, stats *EdgeStats, nc *nats.Conn, edgeID string,
 	}
 
 	// Check for threshold violations
-	if reading.Value < thresholdMin || reading.Value > thresholdMax {
+	// Critical range: < 0 or > 100 (Spikes)
+	// Warning range: < 40 or > 60 (Drift)
+	
+	alertType := ""
+	alertMsg := ""
+	
+	if reading.Value < 0 || reading.Value > 100 {
+		alertType = "critical"
+		alertMsg = "Critical value detected (Spike)"
+	} else if reading.Value < 40 || reading.Value > 60 {
+		alertType = "warning"
+		alertMsg = "Process drift detected (Warning)"
+	}
+
+	if alertType != "" {
 		alert := Alert{
 			SensorID:  reading.SensorID,
 			Value:     reading.Value,
 			Timestamp: reading.Timestamp,
 			EdgeID:    edgeID,
-			Type:      "threshold",
-			Message:   "",
-		}
-
-		if reading.Value < thresholdMin {
-			alert.Message = "Value below minimum threshold"
-		} else {
-			alert.Message = "Value above maximum threshold"
+			Type:      alertType,
+			Message:   alertMsg,
 		}
 
 		alertData, err := json.Marshal(alert)
@@ -297,7 +306,7 @@ func processMessage(data []byte, stats *EdgeStats, nc *nats.Conn, edgeID string,
 			log.Printf("Error publishing alert: %v", err)
 		}
 
-		log.Printf("Alert published: sensor_id=%s, value=%.2f, %s", reading.SensorID, reading.Value, alert.Message)
+		log.Printf("Alert published [%s]: sensor_id=%s, value=%.2f, %s", alertType, reading.SensorID, reading.Value, alertMsg)
 	}
 }
 
