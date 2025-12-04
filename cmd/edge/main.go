@@ -6,6 +6,7 @@ import (
 	"flag"
 	"log"
 	"math"
+	"net/http"
 	"sync"
 	"time"
 
@@ -37,25 +38,30 @@ type Alert struct {
 
 type EdgeStats struct {
 	mu            sync.RWMutex
-	count         int
-	sum           float64
-	min           float64
-	max           float64
-	windowValues  []float64
-	windowSize    int
-	lastAggregate time.Time
+	Count         int       `json:"count"`
+	Sum           float64   `json:"sum"`
+	Min           float64   `json:"min"`
+	Max           float64   `json:"max"`
+	WindowValues  []float64 `json:"-"`
+	WindowSize    int       `json:"window_size"`
+	LastAggregate time.Time `json:"last_aggregate"`
+	EdgeID        string    `json:"edge_id"`
+	StartTime     time.Time `json:"start_time"`
 }
+
+var globalStats *EdgeStats
 
 func main() {
 	var (
 		edgeID       = flag.String("id", "", "Edge Node ID (auto-generated if empty)")
 		natsURL      = flag.String("nats", "nats://localhost:4222", "NATS server URL")
-		thresholdMin = flag.Float64("min", 0.0, "Minimum threshold for alerts")
-		thresholdMax = flag.Float64("max", 200.0, "Maximum threshold for alerts")
+		thresholdMin = flag.Float64("min", 30.0, "Minimum threshold for alerts")
+		thresholdMax = flag.Float64("max", 80.0, "Maximum threshold for alerts")
 		noiseFilter  = flag.Float64("noise", 3.0, "Noise filter threshold (std deviations)")
 		windowSize   = flag.Int("window", 10, "Aggregation window size")
 		aggregateInt = flag.Duration("aggregate", 5*time.Second, "Aggregation interval")
 		useJetStream = flag.Bool("jetstream", false, "Use JetStream for persistence")
+		httpPort     = flag.String("http-port", "8082", "HTTP API port")
 	)
 	flag.Parse()
 
@@ -63,6 +69,19 @@ func main() {
 	if *edgeID == "" {
 		*edgeID = "edge-" + time.Now().Format("20060102-150405")
 	}
+
+	// Initialize Stats
+	globalStats = &EdgeStats{
+		WindowValues: make([]float64, 0, *windowSize),
+		WindowSize:   *windowSize,
+		Min:          math.Inf(1),
+		Max:          math.Inf(-1),
+		EdgeID:       *edgeID,
+		StartTime:    time.Now(),
+	}
+
+	// Start HTTP Server
+	go startAPIServer(*httpPort)
 
 	// Connect to NATS
 	nc, err := nats.Connect(*natsURL)
@@ -92,19 +111,12 @@ func main() {
 
 	log.Printf("Edge Node %s started, listening to sensors.readings", *edgeID)
 
-	stats := &EdgeStats{
-		windowValues: make([]float64, 0, *windowSize),
-		windowSize:   *windowSize,
-		min:          math.Inf(1),
-		max:          math.Inf(-1),
-	}
-
 	// Start aggregation timer
 	go func() {
 		ticker := time.NewTicker(*aggregateInt)
 		defer ticker.Stop()
 		for range ticker.C {
-			stats.publishAggregate(nc, *edgeID)
+			globalStats.publishAggregate(nc, *edgeID)
 		}
 	}()
 
@@ -134,7 +146,7 @@ func main() {
 					continue
 				}
 				
-				processMessage(msg.Data(), stats, nc, *edgeID, *thresholdMin, *thresholdMax, *noiseFilter)
+				processMessage(msg.Data(), globalStats, nc, *edgeID, *thresholdMin, *thresholdMax, *noiseFilter)
 				if err := msg.Ack(); err != nil {
 					log.Printf("Error acking message: %v", err)
 				}
@@ -145,7 +157,7 @@ func main() {
 		select {}
 	} else {
 		sub, err = nc.Subscribe("sensors.readings", func(msg *nats.Msg) {
-			processMessage(msg.Data, stats, nc, *edgeID, *thresholdMin, *thresholdMax, *noiseFilter)
+			processMessage(msg.Data, globalStats, nc, *edgeID, *thresholdMin, *thresholdMax, *noiseFilter)
 		})
 		if err != nil {
 			log.Fatalf("Failed to subscribe: %v", err)
@@ -160,6 +172,44 @@ func main() {
 	}
 }
 
+func startAPIServer(port string) {
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		globalStats.mu.RLock()
+		defer globalStats.mu.RUnlock()
+
+		// Display struct
+		type DisplayStats struct {
+			*EdgeStats
+			Mean float64 `json:"mean"`
+			Uptime string `json:"uptime"`
+		}
+
+		mean := 0.0
+		if globalStats.Count > 0 {
+			mean = globalStats.Sum / float64(globalStats.Count)
+		}
+
+		display := DisplayStats{
+			EdgeStats: globalStats,
+			Mean:      mean,
+			Uptime:    time.Since(globalStats.StartTime).String(),
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(display)
+	})
+
+	log.Printf("Starting HTTP API on port %s", port)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		log.Printf("HTTP Server failed: %v", err)
+	}
+}
+
 func processMessage(data []byte, stats *EdgeStats, nc *nats.Conn, edgeID string, thresholdMin, thresholdMax, noiseFilter float64) {
 	var reading SensorReading
 	if err := json.Unmarshal(data, &reading); err != nil {
@@ -169,29 +219,29 @@ func processMessage(data []byte, stats *EdgeStats, nc *nats.Conn, edgeID string,
 
 	// Update statistics
 	stats.mu.Lock()
-	stats.count++
-	stats.sum += reading.Value
-	if reading.Value < stats.min {
-		stats.min = reading.Value
+	stats.Count++
+	stats.Sum += reading.Value
+	if reading.Value < stats.Min {
+		stats.Min = reading.Value
 	}
-	if reading.Value > stats.max {
-		stats.max = reading.Value
+	if reading.Value > stats.Max {
+		stats.Max = reading.Value
 	}
-	stats.windowValues = append(stats.windowValues, reading.Value)
-	if len(stats.windowValues) > stats.windowSize {
-		stats.windowValues = stats.windowValues[1:]
+	stats.WindowValues = append(stats.WindowValues, reading.Value)
+	if len(stats.WindowValues) > stats.WindowSize {
+		stats.WindowValues = stats.WindowValues[1:]
 	}
-	mean := stats.sum / float64(stats.count)
+	mean := stats.Sum / float64(stats.Count)
 	stats.mu.Unlock()
 
 	// Calculate standard deviation for noise filtering
 	var stdDev float64
-	if len(stats.windowValues) > 1 {
+	if len(stats.WindowValues) > 1 {
 		var variance float64
-		for _, v := range stats.windowValues {
+		for _, v := range stats.WindowValues {
 			variance += (v - mean) * (v - mean)
 		}
-		stdDev = math.Sqrt(variance / float64(len(stats.windowValues)))
+		stdDev = math.Sqrt(variance / float64(len(stats.WindowValues)))
 	}
 
 	// Noise filtering: reject if value is too far from mean
@@ -255,18 +305,18 @@ func (s *EdgeStats) publishAggregate(nc *nats.Conn, edgeID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.count == 0 {
+	if s.Count == 0 {
 		return
 	}
 
-	mean := s.sum / float64(s.count)
+	mean := s.Sum / float64(s.Count)
 	
 	aggregate := map[string]interface{}{
 		"edge_id":   edgeID,
-		"count":     s.count,
+		"count":     s.Count,
 		"mean":      mean,
-		"min":       s.min,
-		"max":       s.max,
+		"min":       s.Min,
+		"max":       s.Max,
 		"timestamp": time.Now().Unix(),
 	}
 
@@ -281,13 +331,13 @@ func (s *EdgeStats) publishAggregate(nc *nats.Conn, edgeID string) {
 	}
 
 	log.Printf("Aggregate published: edge_id=%s, count=%d, mean=%.2f, min=%.2f, max=%.2f", 
-		edgeID, s.count, mean, s.min, s.max)
+		edgeID, s.Count, mean, s.Min, s.Max)
 
 	// Reset stats
-	s.count = 0
-	s.sum = 0
-	s.min = math.Inf(1)
-	s.max = math.Inf(-1)
-	s.windowValues = s.windowValues[:0]
+	s.Count = 0
+	s.Sum = 0
+	s.Min = math.Inf(1)
+	s.Max = math.Inf(-1)
+	s.WindowValues = s.WindowValues[:0]
 }
 

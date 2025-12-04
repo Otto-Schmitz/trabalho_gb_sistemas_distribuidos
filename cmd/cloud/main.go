@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"math"
+	"net/http"
 	"sync"
 	"time"
 
@@ -29,22 +30,25 @@ type Alert struct {
 
 type GlobalStats struct {
 	mu              sync.RWMutex
-	readings        []float64
-	alerts          []Alert
-	edgeNodes       map[string]int
-	totalReadings   int
-	sum             float64
-	min             float64
-	max             float64
-	startTime       time.Time
-	latencies       []time.Duration
+	Readings        []float64         `json:"-"`
+	Alerts          []Alert           `json:"alerts"`
+	EdgeNodes       map[string]int    `json:"edge_nodes"`
+	TotalReadings   int               `json:"total_readings"`
+	Sum             float64           `json:"sum"`
+	Min             float64           `json:"min"`
+	Max             float64           `json:"max"`
+	StartTime       time.Time         `json:"start_time"`
+	Latencies       []time.Duration   `json:"-"`
 }
+
+var currentStats *GlobalStats
 
 func main() {
 	var (
 		natsURL      = flag.String("nats", "nats://localhost:4222", "NATS server URL")
 		statsInterval = flag.Duration("stats", 10*time.Second, "Statistics reporting interval")
 		maxReadings   = flag.Int("max-readings", 10000, "Maximum readings to keep in memory")
+		httpPort      = flag.String("http-port", "8080", "HTTP API port")
 	)
 	flag.Parse()
 
@@ -57,15 +61,18 @@ func main() {
 
 	log.Println("Cloud Processor started, listening to edge.*")
 
-	stats := &GlobalStats{
-		readings:  make([]float64, 0, *maxReadings),
-		alerts:    make([]Alert, 0),
-		edgeNodes: make(map[string]int),
-		min:       math.Inf(1),
-		max:       math.Inf(-1),
-		startTime: time.Now(),
-		latencies: make([]time.Duration, 0),
+	currentStats = &GlobalStats{
+		Readings:  make([]float64, 0, *maxReadings),
+		Alerts:    make([]Alert, 0),
+		EdgeNodes: make(map[string]int),
+		Min:       math.Inf(1),
+		Max:       math.Inf(-1),
+		StartTime: time.Now(),
+		Latencies: make([]time.Duration, 0),
 	}
+
+	// Start HTTP Server
+	go startAPIServer(*httpPort)
 
 	// Subscribe to filtered readings
 	_, err = nc.Subscribe("edge.filtered", func(msg *nats.Msg) {
@@ -74,11 +81,11 @@ func main() {
 			// Might be an aggregate, try parsing as map
 			var agg map[string]interface{}
 			if err2 := json.Unmarshal(msg.Data, &agg); err2 == nil {
-				processAggregate(agg, stats)
+				processAggregate(agg, currentStats)
 			}
 			return
 		}
-		processFilteredReading(filtered, stats)
+		processFilteredReading(filtered, currentStats)
 	})
 	if err != nil {
 		log.Fatalf("Failed to subscribe to edge.filtered: %v", err)
@@ -91,7 +98,7 @@ func main() {
 			log.Printf("Error unmarshaling alert: %v", err)
 			return
 		}
-		processAlert(alert, stats)
+		processAlert(alert, currentStats)
 	})
 	if err != nil {
 		log.Fatalf("Failed to subscribe to edge.alerts: %v", err)
@@ -102,7 +109,62 @@ func main() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		stats.report()
+		currentStats.report()
+	}
+}
+
+func startAPIServer(port string) {
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		currentStats.mu.RLock()
+		defer currentStats.mu.RUnlock()
+
+		type DisplayStats struct {
+			*GlobalStats
+			Mean           float64 `json:"mean"`
+			StdDev         float64 `json:"std_dev"`
+			Uptime         string  `json:"uptime"`
+			ReadingsPerSec float64 `json:"readings_per_sec"`
+			TotalAlerts    int     `json:"total_alerts"`
+		}
+
+		mean := 0.0
+		if currentStats.TotalReadings > 0 {
+			mean = currentStats.Sum / float64(currentStats.TotalReadings)
+		}
+
+		var variance float64
+		for _, v := range currentStats.Readings {
+			variance += (v - mean) * (v - mean)
+		}
+		stdDev := 0.0
+		if len(currentStats.Readings) > 0 {
+			stdDev = math.Sqrt(variance / float64(len(currentStats.Readings)))
+		}
+		
+		uptime := time.Since(currentStats.StartTime)
+		rate := float64(currentStats.TotalReadings) / uptime.Seconds()
+
+		display := DisplayStats{
+			GlobalStats:    currentStats,
+			Mean:           mean,
+			StdDev:         stdDev,
+			Uptime:         uptime.String(),
+			ReadingsPerSec: rate,
+			TotalAlerts:    len(currentStats.Alerts),
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(display)
+	})
+
+	log.Printf("Starting HTTP API on port %s", port)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		log.Printf("HTTP Server failed: %v", err)
 	}
 }
 
@@ -113,28 +175,28 @@ func processFilteredReading(reading FilteredReading, stats *GlobalStats) {
 	stats.mu.Lock()
 	defer stats.mu.Unlock()
 
-	stats.totalReadings++
-	stats.sum += reading.Value
-	if reading.Value < stats.min {
-		stats.min = reading.Value
+	stats.TotalReadings++
+	stats.Sum += reading.Value
+	if reading.Value < stats.Min {
+		stats.Min = reading.Value
 	}
-	if reading.Value > stats.max {
-		stats.max = reading.Value
+	if reading.Value > stats.Max {
+		stats.Max = reading.Value
 	}
 
 	// Keep readings in sliding window
-	if len(stats.readings) >= cap(stats.readings) {
-		stats.readings = stats.readings[1:]
+	if len(stats.Readings) >= cap(stats.Readings) {
+		stats.Readings = stats.Readings[1:]
 	}
-	stats.readings = append(stats.readings, reading.Value)
+	stats.Readings = append(stats.Readings, reading.Value)
 
 	// Track edge nodes
-	stats.edgeNodes[reading.EdgeID]++
+	stats.EdgeNodes[reading.EdgeID]++
 
 	// Track latencies
-	stats.latencies = append(stats.latencies, latency)
-	if len(stats.latencies) > 10000 {
-		stats.latencies = stats.latencies[1:]
+	stats.Latencies = append(stats.Latencies, latency)
+	if len(stats.Latencies) > 10000 {
+		stats.Latencies = stats.Latencies[1:]
 	}
 }
 
@@ -144,7 +206,7 @@ func processAggregate(agg map[string]interface{}, stats *GlobalStats) {
 
 	if edgeID, ok := agg["edge_id"].(string); ok {
 		if count, ok := agg["count"].(float64); ok {
-			stats.edgeNodes[edgeID] += int(count)
+			stats.EdgeNodes[edgeID] += int(count)
 		}
 	}
 }
@@ -153,9 +215,9 @@ func processAlert(alert Alert, stats *GlobalStats) {
 	stats.mu.Lock()
 	defer stats.mu.Unlock()
 
-	stats.alerts = append(stats.alerts, alert)
-	if len(stats.alerts) > 1000 {
-		stats.alerts = stats.alerts[1:]
+	stats.Alerts = append(stats.Alerts, alert)
+	if len(stats.Alerts) > 1000 {
+		stats.Alerts = stats.Alerts[1:]
 	}
 
 	log.Printf("Alert received: sensor_id=%s, edge_id=%s, value=%.2f, message=%s",
@@ -166,49 +228,52 @@ func (s *GlobalStats) report() {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.totalReadings == 0 {
+	if s.TotalReadings == 0 {
 		log.Println("No readings received yet")
 		return
 	}
 
-	mean := s.sum / float64(s.totalReadings)
+	mean := s.Sum / float64(s.TotalReadings)
 	
 	// Calculate standard deviation
 	var variance float64
-	for _, v := range s.readings {
+	for _, v := range s.Readings {
 		variance += (v - mean) * (v - mean)
 	}
-	stdDev := math.Sqrt(variance / float64(len(s.readings)))
-
-	// Calculate percentiles for latency
-	latencyP95 := calculatePercentile(s.latencies, 95)
-	latencyP99 := calculatePercentile(s.latencies, 99)
-	var avgLatency time.Duration
-	if len(s.latencies) > 0 {
-		var sum time.Duration
-		for _, l := range s.latencies {
-			sum += l
-		}
-		avgLatency = sum / time.Duration(len(s.latencies))
+	stdDev := 0.0
+	if len(s.Readings) > 0 {
+		stdDev = math.Sqrt(variance / float64(len(s.Readings)))
 	}
 
-	uptime := time.Since(s.startTime)
-	rate := float64(s.totalReadings) / uptime.Seconds()
+	// Calculate percentiles for latency
+	latencyP95 := calculatePercentile(s.Latencies, 95)
+	latencyP99 := calculatePercentile(s.Latencies, 99)
+	var avgLatency time.Duration
+	if len(s.Latencies) > 0 {
+		var sum time.Duration
+		for _, l := range s.Latencies {
+			sum += l
+		}
+		avgLatency = sum / time.Duration(len(s.Latencies))
+	}
+
+	uptime := time.Since(s.StartTime)
+	rate := float64(s.TotalReadings) / uptime.Seconds()
 
 	log.Println("=== GLOBAL STATISTICS ===")
 	log.Printf("Uptime: %v", uptime)
-	log.Printf("Total Readings: %d", s.totalReadings)
+	log.Printf("Total Readings: %d", s.TotalReadings)
 	log.Printf("Readings/sec: %.2f", rate)
 	log.Printf("Mean: %.2f", mean)
 	log.Printf("Std Dev: %.2f", stdDev)
-	log.Printf("Min: %.2f", s.min)
-	log.Printf("Max: %.2f", s.max)
-	log.Printf("Active Edge Nodes: %d", len(s.edgeNodes))
-	log.Printf("Total Alerts: %d", len(s.alerts))
+	log.Printf("Min: %.2f", s.Min)
+	log.Printf("Max: %.2f", s.Max)
+	log.Printf("Active Edge Nodes: %d", len(s.EdgeNodes))
+	log.Printf("Total Alerts: %d", len(s.Alerts))
 	log.Printf("Latency - Avg: %v, P95: %v, P99: %v", avgLatency, latencyP95, latencyP99)
 	
 	// Edge node breakdown
-	for edgeID, count := range s.edgeNodes {
+	for edgeID, count := range s.EdgeNodes {
 		log.Printf("  Edge %s: %d readings", edgeID, count)
 	}
 	log.Println("=========================")
