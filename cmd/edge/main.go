@@ -231,7 +231,7 @@ func processMessage(data []byte, stats *EdgeStats, nc *nats.Conn, edgeID string,
 	if len(stats.WindowValues) > stats.WindowSize {
 		stats.WindowValues = stats.WindowValues[1:]
 	}
-	mean := stats.Sum / float64(stats.Count)
+	// mean := stats.Sum / float64(stats.Count) // Not used currently
 	stats.mu.Unlock()
 
 	// Calculate standard deviation for noise filtering (just for logging if needed)
