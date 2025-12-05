@@ -31,6 +31,7 @@ type Alert struct {
 type GlobalStats struct {
 	mu              sync.RWMutex
 	Readings        []float64         `json:"-"`
+	LastValue       float64           `json:"last_value"`
 	Alerts          []Alert           `json:"alerts"`
 	EdgeNodes       map[string]int    `json:"edge_nodes"`
 	TotalReadings   int               `json:"total_readings"`
@@ -128,6 +129,7 @@ func startAPIServer(port string) {
 			Mean           float64 `json:"mean"`
 			StdDev         float64 `json:"std_dev"`
 			Uptime         string  `json:"uptime"`
+			UptimeSeconds  float64 `json:"uptime_seconds"`
 			ReadingsPerSec float64 `json:"readings_per_sec"`
 			TotalAlerts    int     `json:"total_alerts"`
 		}
@@ -154,6 +156,7 @@ func startAPIServer(port string) {
 			Mean:           mean,
 			StdDev:         stdDev,
 			Uptime:         uptime.String(),
+			UptimeSeconds:  uptime.Seconds(),
 			ReadingsPerSec: rate,
 			TotalAlerts:    len(currentStats.Alerts),
 		}
@@ -177,6 +180,7 @@ func processFilteredReading(reading FilteredReading, stats *GlobalStats) {
 
 	stats.TotalReadings++
 	stats.Sum += reading.Value
+	stats.LastValue = reading.Value
 	if reading.Value < stats.Min {
 		stats.Min = reading.Value
 	}
