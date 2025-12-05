@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -155,7 +156,7 @@ func startAPIServer(port string) {
 			GlobalStats:    currentStats,
 			Mean:           mean,
 			StdDev:         stdDev,
-			Uptime:         uptime.String(),
+			Uptime:         formatDuration(uptime),
 			UptimeSeconds:  uptime.Seconds(),
 			ReadingsPerSec: rate,
 			TotalAlerts:    len(currentStats.Alerts),
@@ -307,3 +308,12 @@ func calculatePercentile(latencies []time.Duration, p int) time.Duration {
 	return sorted[index]
 }
 
+
+func formatDuration(d time.Duration) string {
+	h := d / time.Hour
+	d -= h * time.Hour
+	m := d / time.Minute
+	d -= m * time.Minute
+	s := d / time.Second
+	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+}
