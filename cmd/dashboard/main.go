@@ -250,10 +250,10 @@ func (d *DashboardData) getStats() DashboardData {
 			sum += l
 		}
 		avgLatency := sum / time.Duration(len(d.latencies))
-		stats.AvgLatency = avgLatency.String()
+		stats.AvgLatency = fmt.Sprintf("%.2fms", float64(avgLatency.Microseconds())/1000.0)
 
-		// Update history (keep last 60 points)
-		d.LatencyHistory = append(d.LatencyHistory, float64(avgLatency.Milliseconds()))
+		// Update history (keep last 60 points) in ms
+		d.LatencyHistory = append(d.LatencyHistory, float64(avgLatency.Microseconds())/1000.0)
 		if len(d.LatencyHistory) > 60 {
 			d.LatencyHistory = d.LatencyHistory[1:]
 		}
@@ -280,8 +280,8 @@ func (d *DashboardData) getStats() DashboardData {
 		if p99Idx >= len(sorted) {
 			p99Idx = len(sorted) - 1
 		}
-		stats.LatencyP95 = sorted[p95Idx].String()
-		stats.LatencyP99 = sorted[p99Idx].String()
+		stats.LatencyP95 = fmt.Sprintf("%.2fms", float64(sorted[p95Idx].Microseconds())/1000.0)
+		stats.LatencyP99 = fmt.Sprintf("%.2fms", float64(sorted[p99Idx].Microseconds())/1000.0)
 	}
 
 	return stats
