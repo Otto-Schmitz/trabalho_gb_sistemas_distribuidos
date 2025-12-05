@@ -335,7 +335,8 @@ func (s *EdgeStats) publishAggregate(nc *nats.Conn, edgeID string) {
 		return
 	}
 
-	if err := nc.Publish("edge.filtered", data); err != nil {
+	// Publish aggregates on a dedicated subject to avoid mixing with per-reading stream
+	if err := nc.Publish("edge.aggregate", data); err != nil {
 		log.Printf("Error publishing aggregate: %v", err)
 	}
 

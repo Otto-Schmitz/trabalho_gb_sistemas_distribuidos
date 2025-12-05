@@ -76,21 +76,29 @@ func main() {
 	// Start HTTP Server
 	go startAPIServer(*httpPort)
 
-	// Subscribe to filtered readings
+	// Subscribe to filtered readings (per-message stream)
 	_, err = nc.Subscribe("edge.filtered", func(msg *nats.Msg) {
 		var filtered FilteredReading
 		if err := json.Unmarshal(msg.Data, &filtered); err != nil {
-			// Might be an aggregate, try parsing as map
-			var agg map[string]interface{}
-			if err2 := json.Unmarshal(msg.Data, &agg); err2 == nil {
-				processAggregate(agg, currentStats)
-			}
+			// Ignore non-reading payloads on this subject
 			return
 		}
 		processFilteredReading(filtered, currentStats)
 	})
 	if err != nil {
 		log.Fatalf("Failed to subscribe to edge.filtered: %v", err)
+	}
+
+	// Subscribe to aggregates on a dedicated subject
+	_, err = nc.Subscribe("edge.aggregate", func(msg *nats.Msg) {
+		var agg map[string]interface{}
+		if err := json.Unmarshal(msg.Data, &agg); err != nil {
+			return
+		}
+		processAggregate(agg, currentStats)
+	})
+	if err != nil {
+		log.Fatalf("Failed to subscribe to edge.aggregate: %v", err)
 	}
 
 	// Subscribe to alerts
