@@ -140,7 +140,7 @@ func main() {
 
 func (d *DashboardData) processReading(reading FilteredReading) {
 	now := time.Now()
-	latency := time.Duration(now.Unix()-reading.Timestamp) * time.Second
+	latency := time.Duration(now.UnixMilli()-reading.Timestamp) * time.Millisecond
 	if latency < 0 {
 		latency = 0
 	} // Prevent negative latency

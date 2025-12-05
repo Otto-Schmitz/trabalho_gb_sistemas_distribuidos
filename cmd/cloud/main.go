@@ -181,8 +181,8 @@ func startAPIServer(port string) {
 }
 
 func processFilteredReading(reading FilteredReading, stats *GlobalStats) {
-	now := time.Now().Unix()
-	latency := time.Duration(now-reading.Timestamp) * time.Second
+	now := time.Now().UnixMilli()
+	latency := time.Duration(now-reading.Timestamp) * time.Millisecond
 
 	stats.mu.Lock()
 	defer stats.mu.Unlock()

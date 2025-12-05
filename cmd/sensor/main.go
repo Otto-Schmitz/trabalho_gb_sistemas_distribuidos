@@ -90,7 +90,7 @@ func main() {
 		reading := SensorReading{
 			SensorID:  *sensorID,
 			Value:     value,
-			Timestamp: time.Now().Unix(),
+			Timestamp: time.Now().UnixMilli(), // use ms to enable precise latency
 		}
 
 		data, err := json.Marshal(reading)
